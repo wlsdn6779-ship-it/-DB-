@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, io, re, time, zipfile, traceback
+import os, io, re, time, traceback
 from datetime import datetime, timezone, timedelta
 from typing import List
 import pandas as pd
@@ -8,7 +8,7 @@ import requests
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
-from urllib.parse import quote  # ★ 추가: 파일명 인코딩용
+from urllib.parse import quote  # 파일명 인코딩용
 
 HEADER_ROW_IDX = 2
 TARGET_POLICY = "개인 맞춤 광고 정책 내 건강 관련 콘텐츠 (제한됨)"
@@ -227,7 +227,6 @@ def sync_final_table_to_notion(final_table: pd.DataFrame,
             try:
                 notion_update_page_properties(page["id"], updates)
             except Exception:
-                # 노션 동기화는 실패해도 전체 흐름은 계속
                 print("[Notion Sync] 실패\n", traceback.format_exc())
         time.sleep(sleep_sec)
 
@@ -247,7 +246,6 @@ def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
     stem = f"[{brand}]_가용사이즈확인_{date_part}_{time_part}"
 
     xlsx_b = io.BytesIO(); final_table.to_excel(xlsx_b, sheet_name="table", index=True); xlsx_b.seek(0)
-    csv_b  = io.BytesIO(); final_table.to_csv(csv_b, encoding="utf-8-sig"); csv_b.seek(0)
 
     if do_sync and NOTION_TOKEN and NOTION_DB_ID:
         try:
@@ -256,7 +254,7 @@ def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
         except Exception:
             print("[Notion Sync] 실패\n", traceback.format_exc())
 
-    return brand, stem, {"xlsx": xlsx_b.getvalue(), "csv": csv_b.getvalue(), "final_df": final_table}
+    return brand, stem, {"xlsx": xlsx_b.getvalue(), "final_df": final_table}
 
 # ------------------ 앱 & 전역 에러 핸들러 ------------------
 app = FastAPI(title="[구글] 콘텐츠 가용사이즈")
@@ -296,8 +294,8 @@ run.onclick=async ()=>{
   const res=await fetch('/process'+(notion.checked?'?notion_sync=true':''),{method:'POST',body:fd});
   if(!res.ok){ statusEl.textContent='에러:\\n'+await res.text(); return; }
   const blob=await res.blob();
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='result.zip'; document.body.appendChild(a); a.click(); a.remove();
-  statusEl.textContent='완료! ZIP 다운로드됨';
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='result.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+  statusEl.textContent='완료! XLSX 다운로드됨';
 };
 </script></body></html>
 """
@@ -321,51 +319,40 @@ async def process(files: List[UploadFile] = File(...), notion_sync: bool = False
             results.append((brand, stem, outs))
             brands.append(brand)
 
-        uniq = sorted(set(brands))
-        merged_brand = uniq[0] if len(uniq) == 1 else "복합"
         KST = timezone(timedelta(hours=9)); now_kst = datetime.now(KST)
         date_part = now_kst.strftime("%y%m%d"); time_part = now_kst.strftime("%H%M")
-        merged_stem = f"[{merged_brand}]_가용사이즈확인_{date_part}_{time_part}"
 
-        merged_df = pd.concat([r[2]["final_df"] for r in results], axis=0)
-        merged_xlsx = io.BytesIO(); merged_df.to_excel(merged_xlsx, sheet_name="table", index=True); merged_xlsx.seek(0)
-        merged_csv  = io.BytesIO(); merged_df.to_csv(merged_csv, encoding="utf-8-sig"); merged_csv.seek(0)
+        # 단일 파일이면 그 파일의 결과 1개
+        if len(results) == 1:
+            brand, stem, outs = results[0]
+            final_name = f"{stem}.xlsx"
+            xlsx_bytes = outs["xlsx"]
 
-        # 파일명 중복 방지
-        def unique_name_factory():
-            used = set()
-            def unique(name: str) -> str:
-                if name not in used:
-                    used.add(name); return name
-                base, ext = os.path.splitext(name); i = 2
-                while True:
-                    cand = f"{base}-{i}{ext}"
-                    if cand not in used:
-                        used.add(cand); return cand
-                    i += 1
-            return unique
-        unique_name = unique_name_factory()
+        else:
+            uniq = sorted(set(brands))
+            # 여러 파일 + 여러 브랜드 => 복합 / 한 브랜드만 => 해당 브랜드명
+            merged_brand = "복합" if len(uniq) >= 2 else uniq[0]
+            merged_stem = f"[{merged_brand}]_가용사이즈확인_{date_part}_{time_part}"
+            merged_df = pd.concat([r[2]["final_df"] for r in results], axis=0)
 
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for brand, stem, outs in results:
-                zf.writestr(unique_name(f"{stem}.xlsx"), outs["xlsx"])
-                zf.writestr(unique_name(f"{stem}.csv"),  outs["csv"])
-            zf.writestr(unique_name(f"{merged_stem}.xlsx"), merged_xlsx.getvalue())
-            zf.writestr(unique_name(f"{merged_stem}.csv"),  merged_csv.getvalue())
+            buf_xlsx = io.BytesIO()
+            merged_df.to_excel(buf_xlsx, sheet_name="table", index=True)
+            buf_xlsx.seek(0)
 
-        buf.seek(0)
+            final_name = f"{merged_stem}.xlsx"
+            xlsx_bytes = buf_xlsx.getvalue()
 
-        # ★ 한글 파일명 안전 처리: ASCII fallback + RFC6266 filename*
-        ascii_fallback = re.sub(r'[^A-Za-z0-9._-]', '_', f"{merged_stem}.zip")
-        utf8_quoted = quote(f"{merged_stem}.zip")
+        # 한글 파일명 안전 처리 (RFC6266)
+        ascii_fallback = re.sub(r'[^A-Za-z0-9._-]', '_', final_name)
+        utf8_quoted = quote(final_name)
         content_disposition = f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_quoted}"
 
         return StreamingResponse(
-            buf,
-            media_type="application/zip",
+            io.BytesIO(xlsx_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": content_disposition}
         )
+
     except HTTPException:
         raise
     except Exception as exc:
