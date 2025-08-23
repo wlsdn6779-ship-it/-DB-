@@ -2,13 +2,14 @@
 import os, io, re, time, traceback
 from datetime import datetime, timezone, timedelta
 from typing import List
+from urllib.parse import quote
+
 import pandas as pd
 import numpy as np
 import requests
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
-from urllib.parse import quote
 
 HEADER_ROW_IDX = 2
 TARGET_POLICY = "개인 맞춤 광고 정책 내 건강 관련 콘텐츠 (제한됨)"
@@ -43,8 +44,7 @@ def read_input_table_from_bytes(name: str, data: bytes) -> pd.DataFrame:
             pass
     for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
         try:
-            return pd.read_csv(io.BytesIO(data), header=None, sep=None,
-                               engine="python", encoding=enc)
+            return pd.read_csv(io.BytesIO(data), header=None, sep=None, engine="python", encoding=enc)
         except Exception:
             continue
     for sep in ["\t", ",", ";"]:
@@ -209,10 +209,16 @@ run.onclick=async ()=>{
   if(!filesEl.files.length){alert('파일을 선택하세요');return;}
   statusEl.textContent='처리 중...';
   const fd=new FormData(); for(const f of filesEl.files) fd.append('files', f);
-  const res=await fetch('/process'+(notion.checked?'?notion_sync=true':''),{method:'POST',body:fd});
+  const res=await fetch('/process'+(notion.checked?'?notion_sync=true':''),{method:'POST',body:fd, cache:'no-store'});
   if(!res.ok){ statusEl.textContent='에러:\\n'+await res.text(); return; }
+  const disp = res.headers.get('content-disposition') || '';
+  // 기본 파일명
+  let fname = 'result.xlsx';
+  const m = /filename\\*=UTF-8''([^;]+)/i.exec(disp) || /filename="?([^";]+)"?/i.exec(disp);
+  if(m && m[1]) fname = decodeURIComponent(m[1]);
   const blob=await res.blob();
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='result.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname;
+  document.body.appendChild(a); a.click(); a.remove();
   statusEl.textContent='완료! 엑셀 다운로드됨';
 };
 </script></body></html>
@@ -229,42 +235,43 @@ async def process(files: List[UploadFile] = File(...), notion_sync: bool = False
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
 
-    results, brands, dfs = [], [], []
+    brands, dfs = [], []
     for f in files:
         b = await f.read()
         brand, final_table = process_single_file(f.filename, b, do_sync=notion_sync)
-        results.append((brand, final_table))
         brands.append(brand)
         dfs.append(final_table)
 
     uniq = sorted(set(brands))
-    KST=timezone(timedelta(hours=9)); now_kst=datetime.now(KST)
+    KST = timezone(timedelta(hours=9)); now_kst = datetime.now(KST)
     date_part = now_kst.strftime("%y%m%d"); time_part = now_kst.strftime("%H%M")
 
+    # 1개면 해당 브랜드, 여러 개면 단일/복수 브랜드에 따라 이름 지정
     if len(files) == 1:
         merged_brand = uniq[0]
     else:
-        merged_brand = uniq[0] if len(uniq)==1 else "복합"
+        merged_brand = uniq[0] if len(uniq) == 1 else "복합"
 
     merged_stem = f"[{merged_brand}]_가용사이즈확인_{date_part}_{time_part}"
 
-    # 여러개면 concat으로 통합
+    # 통합 테이블 생성
     merged_df = pd.concat(dfs, axis=0) if len(dfs) > 1 else dfs[0]
-    merged_xlsx = io.BytesIO()
-    merged_df.to_excel(merged_xlsx, sheet_name="table", index=True)
-    merged_xlsx.seek(0)
+    out = io.BytesIO()
+    merged_df.to_excel(out, sheet_name="table", index=True)
+    out.seek(0)
 
-    xlsx_bytes = merged_xlsx.getvalue()
-    safe_base = "result"
+    # 파일명(UTF-8 안전)
     utf8_name = f"{merged_stem}.xlsx"
     utf8_name_q = quote(utf8_name)
 
     headers = {
-        "Content-Disposition": f"attachment; filename={safe_base}.xlsx; filename*=UTF-8''{utf8_name_q}"
+        # 확실히 xlsx로 저장되게 이름을 지정(캐시 방지 헤더도 포함)
+        "Content-Disposition": f"attachment; filename=result.xlsx; filename*=UTF-8''{utf8_name_q}",
+        "Cache-Control": "no-store"
     }
 
     return StreamingResponse(
-        io.BytesIO(xlsx_bytes),
+        out,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
