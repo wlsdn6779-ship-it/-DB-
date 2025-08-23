@@ -1,8 +1,3 @@
-
-mkdir -p notion-pipeline-app && cd notion-pipeline-app
-
-# 2) app.py 생성 (FastAPI + 업로드 UI + 처리/ZIP 다운로드)
-cat > app.py <<'PY'
 # -*- coding: utf-8 -*-
 import os, io, re, time, zipfile, traceback
 from datetime import datetime, timezone, timedelta
@@ -164,7 +159,7 @@ def sync_final_table_to_notion(final_table: pd.DataFrame,
     def notion_query_all_pages(db_id, page_size=100):
         url=f"https://api.notion.com/v1/databases/{db_id}/query"; cursor=None
         while True:
-            payload={"page_size":page_size}; 
+            payload={"page_size":page_size}
             if cursor: payload["start_cursor"]=cursor
             r=requests.post(url, headers=_notion_headers(), json=payload, timeout=60); r.raise_for_status()
             data=r.json()
@@ -177,7 +172,7 @@ def sync_final_table_to_notion(final_table: pd.DataFrame,
     dbjson=notion_get_database(db_id); db_props=dbjson.get("properties",{})
     size_types={}
     for col in size_cols:
-        p=db_props.get(col); 
+        p=db_props.get(col)
         if p: size_types[col]=p.get("type")
 
     for page in notion_query_all_pages(db_id):
@@ -279,11 +274,9 @@ async def process(files: List[UploadFile] = File(...), notion_sync: bool = False
     KST=timezone(timedelta(hours=9)); now_kst=datetime.now(KST)
     date_part=now_kst.strftime("%y%m%d"); time_part=now_kst.strftime("%H%M")
     merged_stem=f"[{merged_brand}]_가용사이즈확인_{date_part}_{time_part}"
-    # 통합표
     merged_df = pd.concat([r[2]["final_df"] for r in results], axis=0)
     merged_xlsx=io.BytesIO(); merged_df.to_excel(merged_xlsx, sheet_name="table", index=True); merged_xlsx.seek(0)
     merged_csv=io.BytesIO(); merged_df.to_csv(merged_csv, encoding="utf-8-sig"); merged_csv.seek(0)
-    # ZIP
     buf=io.BytesIO()
     with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as zf:
         for brand, stem, outs in results:
@@ -299,44 +292,3 @@ if __name__ == "__main__":
     import uvicorn
     port=int(os.getenv("PORT","8000"))
     uvicorn.run(app, host="0.0.0.0", port=port)
-PY
-
-# 3) requirements.txt
-cat > requirements.txt <<'REQ'
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-pandas==2.2.2
-numpy==1.26.4
-openpyxl==3.1.5
-xlsxwriter==3.2.0
-requests==2.32.3
-REQ
-
-# 4) render.yaml (Render에서 자동 인식)
-cat > render.yaml <<'YAML'
-services:
-  - type: web
-    name: ib-google
-    env: python
-    plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT"
-    healthCheckPath: /healthz
-    envVars:
-      - key: NOTION_TOKEN
-        sync: false
-      - key: NOTION_DB_ID
-        sync: false
-YAML
-
-# 5) Procfile (Heroku 스타일, 있어도/없어도 됨)
-echo 'web: uvicorn app:app --host 0.0.0.0 --port $PORT' > Procfile
-
-# 6) Git 초기화 & GitHub로 푸시
-git init
-git add .
-git commit -m "first commit"
-git branch -M main
-git remote add origin https://github.com/wlsdn6779-ship-it/-DB-.git
-git push -u origin main
-# ==== 끝 ====
