@@ -222,17 +222,18 @@ def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
 
     return brand, stem, {"xlsx": xlsx_b.getvalue(), "csv": csv_b.getvalue(), "final_df": final_table}
 
-app = FastAPI(title="구글 리젝 처리기")
+# ★ 여기 변경
+app = FastAPI(title="[구글] 콘텐츠 가용사이즈")
 
 INDEX_HTML = """
 <!doctype html><html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>구글 리젝 처리기</title>
+<title>[구글] 콘텐츠 가용사이즈</title>
 <link href="https://unpkg.com/sakura.css/css/sakura.css" rel="stylesheet">
 <style>.container{max-width:960px;margin:40px auto}.btn{background:#1e88e5;color:#fff;border:none;padding:10px 16px;border-radius:6px;cursor:pointer;width:100%} .card{background:#fff;border:1px solid #eee;border-radius:10px;padding:20px;box-shadow:0 2px 10px rgba(0,0,0,.05)}</style>
 </head><body>
 <div class="container">
-  <h1>구글 리젝 처리기</h1>
+  <h1>[구글] 콘텐츠 가용사이즈</h1>
   <div class="card">
     <input id="files" type="file" multiple />
     <div style="margin:10px 0"><label><input type="checkbox" id="notion"> Notion 동기화</label></div>
