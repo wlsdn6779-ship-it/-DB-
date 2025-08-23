@@ -5,7 +5,8 @@ from typing import List
 import pandas as pd
 import numpy as np
 import requests
-from fastapi import FastAPI, UploadFile, File, HTTPException
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
 
 HEADER_ROW_IDX = 2
@@ -35,25 +36,35 @@ def read_input_table_from_bytes(name: str, data: bytes) -> pd.DataFrame:
         return pd.read_excel(io.BytesIO(data), header=None)
     head = data[:4]
     if head.startswith(b"\xff\xfe") or head.startswith(b"\xfe\xff"):
-        try: return _manual_utf16_tab_read_bytes(data)
-        except Exception: pass
+        try:
+            return _manual_utf16_tab_read_bytes(data)
+        except Exception:
+            pass
     for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
-        try: return pd.read_csv(io.BytesIO(data), header=None, sep=None, engine="python", encoding=enc)
-        except Exception: continue
+        try:
+            return pd.read_csv(io.BytesIO(data), header=None, sep=None,
+                               engine="python", encoding=enc)
+        except Exception:
+            continue
     for sep in ["\t", ",", ";"]:
-        try: return pd.read_csv(io.BytesIO(data), header=None, sep=sep, encoding="utf-16")
-        except Exception: continue
+        try:
+            return pd.read_csv(io.BytesIO(data), header=None, sep=sep, encoding="utf-16")
+        except Exception:
+            continue
     raise RuntimeError(f"Failed to parse the input file: {name}")
 
 def resolve_columns(df):
     headers = df.iloc[HEADER_ROW_IDX].astype(str).str.strip().tolist()
     body = df.iloc[HEADER_ROW_IDX + 1:].copy()
     body.columns = [str(c).strip() for c in headers]
+
     def find_col(cols, keyword):
         for c in cols:
-            if c == keyword: return c
+            if c == keyword:
+                return c
         for c in cols:
-            if keyword in str(c): return c
+            if keyword in str(c):
+                return c
         aliases = {
             "광고이름": ["광고 이름","광고명","Ad name","이미지 광고 이름"],
             "승인상태": ["승인 상태","Approval status"],
@@ -62,18 +73,22 @@ def resolve_columns(df):
         if keyword in aliases:
             for alias in aliases[keyword]:
                 for c in cols:
-                    if c == alias: return c
+                    if c == alias:
+                        return c
         raise KeyError(f"Missing required column: {keyword}")
+
     adname_col   = find_col(body.columns, "광고이름")
     approval_col = find_col(body.columns, "승인상태")
     policy_col   = find_col(body.columns, "광고정책")
+
     for c in [adname_col, approval_col, policy_col]:
         body[c] = body[c].astype(str).str.strip()
     return body, adname_col, approval_col, policy_col
 
 def filter_step1(df, adname_col):
     def has_dot_before_first_underscore(s):
-        if not isinstance(s,str) or s=="" or "_" not in s: return False
+        if not isinstance(s,str) or s=="" or "_" not in s:
+            return False
         return "." in s.split("_",1)[0]
     return df.loc[~df[adname_col].apply(has_dot_before_first_underscore)].copy()
 
@@ -83,7 +98,8 @@ def filter_step2(df, approval_col, policy_col):
     return df.loc[mask_A | mask_B].copy()
 
 def parse_fields_v5(name):
-    if not isinstance(name,str) or name=="": return pd.Series([np.nan,np.nan,np.nan])
+    if not isinstance(name,str) or name=="":
+        return pd.Series([np.nan,np.nan,np.nan])
     parts = name.split("_")
     material = parts[3] if len(parts) >= 5 else np.nan
     size     = parts[-1] if len(parts) >= 2 else np.nan
@@ -101,13 +117,15 @@ def build_step3(df12, adname_col, approval_col, policy_col):
 
 def pick_best_revision(series):
     series = series.dropna().astype(str)
-    if (series == "원본").any(): return "원본"
+    if (series == "원본").any():
+        return "원본"
     best=None
     for s in series:
         m = re.search(r"(\d+)\s*차", s) or re.search(r"(\d+)", s)
         if m:
             n=int(m.group(1))
-            if best is None or n<best: best=n
+            if best is None or n<best:
+                best=n
     return f"{best}차" if best is not None else "x"
 
 def extract_subjects_from_step1(df_step1, adname_col):
@@ -116,7 +134,8 @@ def extract_subjects_from_step1(df_step1, adname_col):
     seen, subjects = {}, []
     for v in material_col:
         if pd.notna(v) and str(v).strip()!="" and v not in seen:
-            seen[v]=True; subjects.append(v)
+            seen[v]=True
+            subjects.append(v)
     return subjects
 
 def build_final_table(df3, subjects_override=None):
@@ -130,7 +149,8 @@ def build_final_table(df3, subjects_override=None):
         seen, subjects = {}, []
         for name in df["소재명"]:
             if name not in seen:
-                seen[name]=True; subjects.append(name)
+                seen[name]=True
+                subjects.append(name)
     base = pd.DataFrame("x", index=TARGET_SIZES, columns=subjects)
     for subj in subjects:
         for sz in TARGET_SIZES:
@@ -147,9 +167,13 @@ def sync_final_table_to_notion(final_table: pd.DataFrame,
                                sleep_sec: float = 0.2):
     if not (NOTION_TOKEN and db_id): return
     def notion_get_database(db_id):
-        r=requests.get(f"https://api.notion.com/v1/databases/{db_id}", headers=_notion_headers(), timeout=30); r.raise_for_status(); return r.json()
+        r=requests.get(f"https://api.notion.com/v1/databases/{db_id}", headers=_notion_headers(), timeout=30)
+        r.raise_for_status()
+        return r.json()
     def notion_update_page_properties(pid, updates):
-        r=requests.patch(f"https://api.notion.com/v1/pages/{pid}", headers=_notion_headers(), json={"properties":updates}, timeout=60); r.raise_for_status()
+        r=requests.patch(f"https://api.notion.com/v1/pages/{pid}", headers=_notion_headers(),
+                         json={"properties":updates}, timeout=60)
+        r.raise_for_status()
     def _get_plain_text(prop):
         if not isinstance(prop,dict): return ""
         t=prop.get("type")
@@ -161,7 +185,8 @@ def sync_final_table_to_notion(final_table: pd.DataFrame,
         while True:
             payload={"page_size":page_size}
             if cursor: payload["start_cursor"]=cursor
-            r=requests.post(url, headers=_notion_headers(), json=payload, timeout=60); r.raise_for_status()
+            r=requests.post(url, headers=_notion_headers(), json=payload, timeout=60)
+            r.raise_for_status()
             data=r.json()
             for row in data.get("results",[]): yield row
             if not data.get("has_more"): break
@@ -183,8 +208,12 @@ def sync_final_table_to_notion(final_table: pd.DataFrame,
         key_norm = raw.replace(" ","").strip()
         exact=None
         for s in subjects:
-            if key_norm==s.replace(" ","").strip(): exact=s; break
-        match = exact if exact is not None else (max([s for s in subjects if (s in raw) or (s.replace(" ","") in key_norm)], key=len) if any([(s in raw) or (s.replace(" ","") in key_norm) for s in subjects]) else None)
+            if key_norm==s.replace(" ","").strip():
+                exact=s; break
+        match = exact if exact is not None else (
+            max([s for s in subjects if (s in raw) or (s.replace(" ","") in key_norm)],
+                key=len) if any([(s in raw) or (s.replace(" ","") in key_norm) for s in subjects]) else None
+        )
         if not match: continue
         row=final_table.loc[match]; updates={}
         for col in size_cols:
@@ -192,10 +221,13 @@ def sync_final_table_to_notion(final_table: pd.DataFrame,
             t=size_types.get(col)
             if t=="select":      updates[col]={"select":{"name":str(val)}}
             elif t=="multi_select": updates[col]={"multi_select":[{"name":str(val)}]}
-            else: updates[col]={"rich_text":[{"type":"text","text":{"content":str(val)}}]}
+            else:               updates[col]={"rich_text":[{"type":"text","text":{"content":str(val)}}]}
         if updates:
-            try: notion_update_page_properties(page["id"], updates)
-            except Exception: pass
+            try:
+                notion_update_page_properties(page["id"], updates)
+            except Exception:
+                # 노션 동기화는 실패해도 전체 흐름은 계속
+                print("[Notion Sync] 실패\n", traceback.format_exc())
         time.sleep(sleep_sec)
 
 def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
@@ -217,13 +249,30 @@ def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
     csv_b  = io.BytesIO(); final_table.to_csv(csv_b, encoding="utf-8-sig"); csv_b.seek(0)
 
     if do_sync and NOTION_TOKEN and NOTION_DB_ID:
-        try: sync_final_table_to_notion(final_table, NOTION_DB_ID, "소재명", ("1x1","4x5","9x16","1920x1080"), 0.2)
-        except Exception as e: print(f"[Notion Sync] 실패: {e}")
+        try:
+            sync_final_table_to_notion(final_table, NOTION_DB_ID, "소재명",
+                                       ("1x1","4x5","9x16","1920x1080"), 0.2)
+        except Exception:
+            print("[Notion Sync] 실패\n", traceback.format_exc())
 
     return brand, stem, {"xlsx": xlsx_b.getvalue(), "csv": csv_b.getvalue(), "final_df": final_table}
 
-# ★ 여기 변경
+# ------------------ 앱 & 전역 에러 핸들러 ------------------
 app = FastAPI(title="[구글] 콘텐츠 가용사이즈")
+
+@app.exception_handler(Exception)
+async def all_exception_handler(request: Request, exc: Exception):
+    """
+    모든 미처리 예외를 잡아 브라우저로 원인 + traceback을 텍스트로 반환.
+    프론트는 res.text()를 그대로 보여주므로 사용자가 바로 원인을 확인할 수 있음.
+    """
+    tb = traceback.format_exc()
+    print("[ERROR] Unhandled exception\n", tb)
+    return PlainTextResponse(
+        f"ERROR: {type(exc).__name__}: {exc}\n\n{tb}",
+        status_code=500
+    )
+# ------------------------------------------------------------
 
 INDEX_HTML = """
 <!doctype html><html lang="ko"><head>
@@ -248,7 +297,7 @@ run.onclick=async ()=>{
   statusEl.textContent='처리 중...';
   const fd=new FormData(); for(const f of filesEl.files) fd.append('files', f);
   const res=await fetch('/process'+(notion.checked?'?notion_sync=true':''),{method:'POST',body:fd});
-  if(!res.ok){statusEl.textContent='에러: '+await res.text(); return;}
+  if(!res.ok){ statusEl.textContent='에러:\\n'+await res.text(); return; }
   const blob=await res.blob();
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='result.zip'; document.body.appendChild(a); a.click(); a.remove();
   statusEl.textContent='완료! ZIP 다운로드됨';
@@ -264,32 +313,68 @@ def healthz(): return "ok"
 
 @app.post("/process")
 async def process(files: List[UploadFile] = File(...), notion_sync: bool = False):
-    if not files: raise HTTPException(status_code=400, detail="No files uploaded.")
-    results, brands = [], []
-    for f in files:
-        b = await f.read()
-        brand, stem, outs = process_single_file(f.filename, b, do_sync=notion_sync)
-        results.append((brand, stem, outs)); brands.append(brand)
-    uniq = sorted(set(brands))
-    merged_brand = uniq[0] if len(uniq)==1 else "복합"
-    KST=timezone(timedelta(hours=9)); now_kst=datetime.now(KST)
-    date_part=now_kst.strftime("%y%m%d"); time_part=now_kst.strftime("%H%M")
-    merged_stem=f"[{merged_brand}]_가용사이즈확인_{date_part}_{time_part}"
-    merged_df = pd.concat([r[2]["final_df"] for r in results], axis=0)
-    merged_xlsx=io.BytesIO(); merged_df.to_excel(merged_xlsx, sheet_name="table", index=True); merged_xlsx.seek(0)
-    merged_csv=io.BytesIO(); merged_df.to_csv(merged_csv, encoding="utf-8-sig"); merged_csv.seek(0)
-    buf=io.BytesIO()
-    with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as zf:
-        for brand, stem, outs in results:
-            zf.writestr(f"{stem}.xlsx", outs["xlsx"])
-            zf.writestr(f"{stem}.csv",  outs["csv"])
-        zf.writestr(f"{merged_stem}.xlsx", merged_xlsx.getvalue())
-        zf.writestr(f"{merged_stem}.csv",  merged_csv.getvalue())
-    buf.seek(0)
-    return StreamingResponse(buf, media_type="application/zip",
-                             headers={"Content-Disposition": f'attachment; filename="{merged_stem}.zip"'})
+    try:
+        if not files:
+            raise HTTPException(status_code=400, detail="No files uploaded.")
+
+        results, brands = [], []
+        for f in files:
+            b = await f.read()
+            brand, stem, outs = process_single_file(f.filename, b, do_sync=notion_sync)
+            results.append((brand, stem, outs))
+            brands.append(brand)
+
+        uniq = sorted(set(brands))
+        merged_brand = uniq[0] if len(uniq) == 1 else "복합"
+        KST = timezone(timedelta(hours=9)); now_kst = datetime.now(KST)
+        date_part = now_kst.strftime("%y%m%d"); time_part = now_kst.strftime("%H%M")
+        merged_stem = f"[{merged_brand}]_가용사이즈확인_{date_part}_{time_part}"
+
+        merged_df = pd.concat([r[2]["final_df"] for r in results], axis=0)
+        merged_xlsx = io.BytesIO(); merged_df.to_excel(merged_xlsx, sheet_name="table", index=True); merged_xlsx.seek(0)
+        merged_csv  = io.BytesIO(); merged_df.to_csv(merged_csv, encoding="utf-8-sig"); merged_csv.seek(0)
+
+        # 파일명 중복 방지
+        def unique_name_factory():
+            used = set()
+            def unique(name: str) -> str:
+                if name not in used:
+                    used.add(name); return name
+                base, ext = os.path.splitext(name); i = 2
+                while True:
+                    cand = f"{base}-{i}{ext}"
+                    if cand not in used:
+                        used.add(cand); return cand
+                    i += 1
+            return unique
+        unique_name = unique_name_factory()
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for brand, stem, outs in results:
+                zf.writestr(unique_name(f"{stem}.xlsx"), outs["xlsx"])
+                zf.writestr(unique_name(f"{stem}.csv"),  outs["csv"])
+            zf.writestr(unique_name(f"{merged_stem}.xlsx"), merged_xlsx.getvalue())
+            zf.writestr(unique_name(f"{merged_stem}.csv"),  merged_csv.getvalue())
+
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{merged_stem}.zip"'}
+        )
+    except HTTPException:
+        # FastAPI가 그대로 처리
+        raise
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print("[/process ERROR]\n", tb)
+        return PlainTextResponse(
+            f"ERROR in /process: {type(exc).__name__}: {exc}\n\n{tb}",
+            status_code=500
+        )
 
 if __name__ == "__main__":
     import uvicorn
-    port=int(os.getenv("PORT","8000"))
+    port = int(os.getenv("PORT", "8000"))
     uvicorn.run(app, host="0.0.0.0", port=port)
