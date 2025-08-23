@@ -8,6 +8,7 @@ import requests
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
+from urllib.parse import quote  # ★ 추가: 파일명 인코딩용
 
 HEADER_ROW_IDX = 2
 TARGET_POLICY = "개인 맞춤 광고 정책 내 건강 관련 콘텐츠 (제한됨)"
@@ -262,10 +263,6 @@ app = FastAPI(title="[구글] 콘텐츠 가용사이즈")
 
 @app.exception_handler(Exception)
 async def all_exception_handler(request: Request, exc: Exception):
-    """
-    모든 미처리 예외를 잡아 브라우저로 원인 + traceback을 텍스트로 반환.
-    프론트는 res.text()를 그대로 보여주므로 사용자가 바로 원인을 확인할 수 있음.
-    """
     tb = traceback.format_exc()
     print("[ERROR] Unhandled exception\n", tb)
     return PlainTextResponse(
@@ -358,13 +355,18 @@ async def process(files: List[UploadFile] = File(...), notion_sync: bool = False
             zf.writestr(unique_name(f"{merged_stem}.csv"),  merged_csv.getvalue())
 
         buf.seek(0)
+
+        # ★ 한글 파일명 안전 처리: ASCII fallback + RFC6266 filename*
+        ascii_fallback = re.sub(r'[^A-Za-z0-9._-]', '_', f"{merged_stem}.zip")
+        utf8_quoted = quote(f"{merged_stem}.zip")
+        content_disposition = f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_quoted}"
+
         return StreamingResponse(
             buf,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{merged_stem}.zip"'}
+            headers={"Content-Disposition": content_disposition}
         )
     except HTTPException:
-        # FastAPI가 그대로 처리
         raise
     except Exception as exc:
         tb = traceback.format_exc()
