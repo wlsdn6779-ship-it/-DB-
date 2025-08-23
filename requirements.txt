@@ -1,7 +1,7 @@
 fastapi==0.115.0
-uvicorn[standard]==0.30.6
+uvicorn==0.30.6        # [standard] 제거
+requests==2.32.3
 pandas==2.2.2
 numpy==1.26.4
 openpyxl==3.1.5
 xlsxwriter==3.2.0
-requests==2.32.3
