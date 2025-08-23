@@ -8,7 +8,7 @@ import requests
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
-from urllib.parse import quote  # 파일명 인코딩용
+from urllib.parse import quote
 
 HEADER_ROW_IDX = 2
 TARGET_POLICY = "개인 맞춤 광고 정책 내 건강 관련 콘텐츠 (제한됨)"
@@ -161,75 +161,6 @@ def build_final_table(df3, subjects_override=None):
     out_T.index.name="소재명"; out_T.columns.name="사이즈"
     return out_T
 
-def sync_final_table_to_notion(final_table: pd.DataFrame,
-                               db_id: str,
-                               subject_prop_name: str = "소재명",
-                               size_props=("1x1","4x5","9x16","1920x1080"),
-                               sleep_sec: float = 0.2):
-    if not (NOTION_TOKEN and db_id): return
-    def notion_get_database(db_id):
-        r=requests.get(f"https://api.notion.com/v1/databases/{db_id}", headers=_notion_headers(), timeout=30)
-        r.raise_for_status()
-        return r.json()
-    def notion_update_page_properties(pid, updates):
-        r=requests.patch(f"https://api.notion.com/v1/pages/{pid}", headers=_notion_headers(),
-                         json={"properties":updates}, timeout=60)
-        r.raise_for_status()
-    def _get_plain_text(prop):
-        if not isinstance(prop,dict): return ""
-        t=prop.get("type")
-        if t=="title":     return "".join(b.get("plain_text","") for b in prop.get("title",[]))
-        if t=="rich_text": return "".join(b.get("plain_text","") for b in prop.get("rich_text",[]))
-        return ""
-    def notion_query_all_pages(db_id, page_size=100):
-        url=f"https://api.notion.com/v1/databases/{db_id}/query"; cursor=None
-        while True:
-            payload={"page_size":page_size}
-            if cursor: payload["start_cursor"]=cursor
-            r=requests.post(url, headers=_notion_headers(), json=payload, timeout=60)
-            r.raise_for_status()
-            data=r.json()
-            for row in data.get("results",[]): yield row
-            if not data.get("has_more"): break
-            cursor=data.get("next_cursor")
-
-    subjects=[str(s) for s in list(final_table.index)]
-    size_cols=[c for c in size_props if c in final_table.columns]
-    dbjson=notion_get_database(db_id); db_props=dbjson.get("properties",{})
-    size_types={}
-    for col in size_cols:
-        p=db_props.get(col)
-        if p: size_types[col]=p.get("type")
-
-    for page in notion_query_all_pages(db_id):
-        props=page.get("properties",{}); subj=props.get(subject_prop_name)
-        if subj is None: continue
-        raw=_get_plain_text(subj).strip()
-        if not raw: continue
-        key_norm = raw.replace(" ","").strip()
-        exact=None
-        for s in subjects:
-            if key_norm==s.replace(" ","").strip():
-                exact=s; break
-        match = exact if exact is not None else (
-            max([s for s in subjects if (s in raw) or (s.replace(" ","") in key_norm)],
-                key=len) if any([(s in raw) or (s.replace(" ","") in key_norm) for s in subjects]) else None
-        )
-        if not match: continue
-        row=final_table.loc[match]; updates={}
-        for col in size_cols:
-            val=row.get(col,"x"); val="x" if pd.isna(val) else val
-            t=size_types.get(col)
-            if t=="select":      updates[col]={"select":{"name":str(val)}}
-            elif t=="multi_select": updates[col]={"multi_select":[{"name":str(val)}]}
-            else:               updates[col]={"rich_text":[{"type":"text","text":{"content":str(val)}}]}
-        if updates:
-            try:
-                notion_update_page_properties(page["id"], updates)
-            except Exception:
-                print("[Notion Sync] 실패\n", traceback.format_exc())
-        time.sleep(sleep_sec)
-
 def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
     df_raw = read_input_table_from_bytes(file_name, file_bytes)
     df_body, adname_col, approval_col, policy_col = resolve_columns(df_raw)
@@ -241,20 +172,7 @@ def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
 
     in_base = os.path.splitext(os.path.basename(file_name))[0]
     brand = in_base.split("_")[-1].strip() if "_" in in_base else in_base.strip()
-    KST = timezone(timedelta(hours=9)); now_kst = datetime.now(KST)
-    date_part = now_kst.strftime("%y%m%d"); time_part = now_kst.strftime("%H%M")
-    stem = f"[{brand}]_가용사이즈확인_{date_part}_{time_part}"
-
-    xlsx_b = io.BytesIO(); final_table.to_excel(xlsx_b, sheet_name="table", index=True); xlsx_b.seek(0)
-
-    if do_sync and NOTION_TOKEN and NOTION_DB_ID:
-        try:
-            sync_final_table_to_notion(final_table, NOTION_DB_ID, "소재명",
-                                       ("1x1","4x5","9x16","1920x1080"), 0.2)
-        except Exception:
-            print("[Notion Sync] 실패\n", traceback.format_exc())
-
-    return brand, stem, {"xlsx": xlsx_b.getvalue(), "final_df": final_table}
+    return brand, final_table
 
 # ------------------ 앱 & 전역 에러 핸들러 ------------------
 app = FastAPI(title="[구글] 콘텐츠 가용사이즈")
@@ -295,7 +213,7 @@ run.onclick=async ()=>{
   if(!res.ok){ statusEl.textContent='에러:\\n'+await res.text(); return; }
   const blob=await res.blob();
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='result.xlsx'; document.body.appendChild(a); a.click(); a.remove();
-  statusEl.textContent='완료! XLSX 다운로드됨';
+  statusEl.textContent='완료! 엑셀 다운로드됨';
 };
 </script></body></html>
 """
@@ -308,60 +226,48 @@ def healthz(): return "ok"
 
 @app.post("/process")
 async def process(files: List[UploadFile] = File(...), notion_sync: bool = False):
-    try:
-        if not files:
-            raise HTTPException(status_code=400, detail="No files uploaded.")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
 
-        results, brands = [], []
-        for f in files:
-            b = await f.read()
-            brand, stem, outs = process_single_file(f.filename, b, do_sync=notion_sync)
-            results.append((brand, stem, outs))
-            brands.append(brand)
+    results, brands, dfs = [], [], []
+    for f in files:
+        b = await f.read()
+        brand, final_table = process_single_file(f.filename, b, do_sync=notion_sync)
+        results.append((brand, final_table))
+        brands.append(brand)
+        dfs.append(final_table)
 
-        KST = timezone(timedelta(hours=9)); now_kst = datetime.now(KST)
-        date_part = now_kst.strftime("%y%m%d"); time_part = now_kst.strftime("%H%M")
+    uniq = sorted(set(brands))
+    KST=timezone(timedelta(hours=9)); now_kst=datetime.now(KST)
+    date_part = now_kst.strftime("%y%m%d"); time_part = now_kst.strftime("%H%M")
 
-        # 단일 파일이면 그 파일의 결과 1개
-        if len(results) == 1:
-            brand, stem, outs = results[0]
-            final_name = f"{stem}.xlsx"
-            xlsx_bytes = outs["xlsx"]
+    if len(files) == 1:
+        merged_brand = uniq[0]
+    else:
+        merged_brand = uniq[0] if len(uniq)==1 else "복합"
 
-        else:
-            uniq = sorted(set(brands))
-            # 여러 파일 + 여러 브랜드 => 복합 / 한 브랜드만 => 해당 브랜드명
-            merged_brand = "복합" if len(uniq) >= 2 else uniq[0]
-            merged_stem = f"[{merged_brand}]_가용사이즈확인_{date_part}_{time_part}"
-            merged_df = pd.concat([r[2]["final_df"] for r in results], axis=0)
+    merged_stem = f"[{merged_brand}]_가용사이즈확인_{date_part}_{time_part}"
 
-            buf_xlsx = io.BytesIO()
-            merged_df.to_excel(buf_xlsx, sheet_name="table", index=True)
-            buf_xlsx.seek(0)
+    # 여러개면 concat으로 통합
+    merged_df = pd.concat(dfs, axis=0) if len(dfs) > 1 else dfs[0]
+    merged_xlsx = io.BytesIO()
+    merged_df.to_excel(merged_xlsx, sheet_name="table", index=True)
+    merged_xlsx.seek(0)
 
-            final_name = f"{merged_stem}.xlsx"
-            xlsx_bytes = buf_xlsx.getvalue()
+    xlsx_bytes = merged_xlsx.getvalue()
+    safe_base = "result"
+    utf8_name = f"{merged_stem}.xlsx"
+    utf8_name_q = quote(utf8_name)
 
-        # 한글 파일명 안전 처리 (RFC6266)
-        ascii_fallback = re.sub(r'[^A-Za-z0-9._-]', '_', final_name)
-        utf8_quoted = quote(final_name)
-        content_disposition = f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_quoted}"
+    headers = {
+        "Content-Disposition": f"attachment; filename={safe_base}.xlsx; filename*=UTF-8''{utf8_name_q}"
+    }
 
-        return StreamingResponse(
-            io.BytesIO(xlsx_bytes),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": content_disposition}
-        )
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        tb = traceback.format_exc()
-        print("[/process ERROR]\n", tb)
-        return PlainTextResponse(
-            f"ERROR in /process: {type(exc).__name__}: {exc}\n\n{tb}",
-            status_code=500
-        )
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 if __name__ == "__main__":
     import uvicorn
