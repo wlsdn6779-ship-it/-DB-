@@ -93,7 +93,7 @@ def resolve_columns(df):
         body[c] = body[c].astype(str).str.strip()
     return body, adname_col, approval_col, policy_col
 
-# ====== 여기 변경됨: '.'이 2개 이상일 때만 제외 ======
+# ====== '.'이 2개 이상일 때만 제외 ======
 def filter_step1(df, adname_col):
     """
     첫 번째 언더스코어(_) 이전 구간에서 점(.)이 '2개 이상'일 때만 제외.
@@ -320,7 +320,7 @@ def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
 
 
 # ====== FastAPI ======
-app = FastAPI(title="[구글] 콘텐츠 가용사이즈"])
+app = FastAPI(title="[구글] 콘텐츠 가용사이즈")
 
 @app.exception_handler(Exception)
 async def all_exception_handler(request: Request, exc: Exception):
