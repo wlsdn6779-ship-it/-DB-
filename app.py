@@ -1,4 +1,5 @@
 #대소문자 구분반영
+#보라샷 위한 . 2개이상으로 필터조건 변경
 
 # -*- coding: utf-8 -*-
 import os, io, re, time, zipfile, traceback
@@ -92,11 +93,19 @@ def resolve_columns(df):
         body[c] = body[c].astype(str).str.strip()
     return body, adname_col, approval_col, policy_col
 
+# ====== 여기 변경됨: '.'이 2개 이상일 때만 제외 ======
 def filter_step1(df, adname_col):
-    def has_dot_before_first_underscore(s):
-        if not isinstance(s,str) or s=="" or "_" not in s: return False
-        return "." in s.split("_",1)[0]
-    return df.loc[~df[adname_col].apply(has_dot_before_first_underscore)].copy()
+    """
+    첫 번째 언더스코어(_) 이전 구간에서 점(.)이 '2개 이상'일 때만 제외.
+    - 문자열이 아니거나 빈 문자열, 혹은 '_'가 없는 경우: 제외하지 않음(False)
+    """
+    def has_two_or_more_dots_before_first_underscore(s):
+        if not isinstance(s, str) or s == "" or "_" not in s:
+            return False
+        prefix = s.split("_", 1)[0]
+        return prefix.count(".") >= 2
+
+    return df.loc[~df[adname_col].apply(has_two_or_more_dots_before_first_underscore)].copy()
 
 def filter_step2(df, approval_col, policy_col):
     mask_A = (df[approval_col] == "승인됨")
@@ -311,7 +320,7 @@ def process_single_file(file_name: str, file_bytes: bytes, do_sync: bool):
 
 
 # ====== FastAPI ======
-app = FastAPI(title="[구글] 콘텐츠 가용사이즈")
+app = FastAPI(title="[구글] 콘텐츠 가용사이즈"])
 
 @app.exception_handler(Exception)
 async def all_exception_handler(request: Request, exc: Exception):
