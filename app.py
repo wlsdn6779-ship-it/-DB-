@@ -1,3 +1,5 @@
+#대소문자 구분반영
+
 # -*- coding: utf-8 -*-
 import os, io, re, time, zipfile, traceback
 from datetime import datetime, timezone, timedelta
@@ -129,34 +131,91 @@ def pick_best_revision(series):
             if best is None or n<best: best=n
     return f"{best}차" if best is not None else "x"
 
+# ====== 대소문자/공백/기호 무시 정규화 유틸 ======
+def _norm(s: str) -> str:
+    s = "" if s is None else str(s)
+    s = s.replace("\ufeff", "").replace("\u200b", "")  # BOM/제로폭 제거
+    s = s.strip()
+    s = re.sub(r"\s+", "", s)  # 모든 공백 제거
+    return s
+
+def _norm_key(s: str) -> str:
+    # 소재명 비교용: 공백 제거 + 소문자
+    return _norm(s).lower()
+
+def _norm_size(s: str) -> str:
+    # 사이즈 비교용: 공백 제거 + 소문자 + '×' → 'x'
+    s = _norm(s).lower()
+    s = s.replace("×", "x")
+    return s
+
 def extract_subjects_from_step1(df_step1, adname_col):
     parsed = df_step1[adname_col].apply(parse_fields_v5)
     material_col = parsed.iloc[:,0]
     seen, subjects = {}, []
     for v in material_col:
-        if pd.notna(v) and str(v).strip()!="" and v not in seen:
-            seen[v]=True; subjects.append(v)
+        if pd.isna(v): 
+            continue
+        v_str = str(v).strip()
+        if not v_str:
+            continue
+        key = _norm_key(v_str)       # 대소문자/공백 무시 키
+        if key not in seen:
+            seen[key]=True
+            subjects.append(v_str)   # 표시는 원본 보존
     return subjects
 
 def build_final_table(df3, subjects_override=None):
     df = df3.copy()
     for col in ["소재명","사이즈","수정차수"]:
         df[col] = df[col].astype(str).str.strip()
-    df = df[df["사이즈"].isin(TARGET_SIZES)].copy()
 
+    # 비교용 정규화 키
+    df["소재키"]  = df["소재명"].apply(_norm_key)
+    df["사이즈키"] = df["사이즈"].apply(_norm_size)
+
+    # 타깃 사이즈(1x1/1X1/1×1 등 모두 허용) 정규화
+    target_size_keys = [_norm_size(s) for s in TARGET_SIZES]
+    df = df[df["사이즈키"].isin(target_size_keys)].copy()
+
+    # subjects 구성: 중복 제거는 소재키 기준, 표시는 원본 유지
     if subjects_override:
-        subjects = [s for s in subjects_override if pd.notna(s) and str(s).strip()]
+        seen_keys = set()
+        subjects = []
+        for s in subjects_override:
+            if pd.isna(s): 
+                continue
+            s_str = str(s).strip()
+            if not s_str:
+                continue
+            k = _norm_key(s_str)
+            if k not in seen_keys:
+                seen_keys.add(k)
+                subjects.append(s_str)
     else:
-        seen, subjects = {}, []
+        seen = set()
+        subjects = []
         for name in df["소재명"]:
-            if name not in seen:
-                seen[name]=True; subjects.append(name)
+            k = _norm_key(name)
+            if k not in seen:
+                seen.add(k)
+                subjects.append(name)
 
+    # 표시라벨 → 비교키 매핑
+    subj_to_key = {s: _norm_key(s) for s in subjects}
+    size_to_key = {sz: _norm_size(sz) for sz in TARGET_SIZES}
+
+    # 베이스 테이블(표시는 원본 라벨)
     base = pd.DataFrame("x", index=TARGET_SIZES, columns=subjects)
+
+    # 채우기: 비교는 키로, 표시는 원본 라벨로
     for subj in subjects:
+        skey = subj_to_key[subj]
         for sz in TARGET_SIZES:
-            subset = df[(df["소재명"]==subj) & (df["사이즈"]==sz)]
+            zkey = size_to_key[sz]
+            subset = df[(df["소재키"]==skey) & (df["사이즈키"]==zkey)]
             base.loc[sz,subj] = pick_best_revision(subset["수정차수"]) if len(subset) else "x"
+
     out_T = base.T.copy()
     out_T.index.name="소재명"; out_T.columns.name="사이즈"
     return out_T
