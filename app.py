@@ -1,5 +1,6 @@
 #대소문자 구분반영
 #보라샷 위한 . 2개이상으로 필터조건 변경
+#소재명 정확하게 일치로 코드 수정
 
 # -*- coding: utf-8 -*-
 import os, io, re, time, zipfile, traceback
