@@ -1,6 +1,6 @@
-#대소문자 구분반영
+#대소문자 구분안함(케이스 무시)
 #보라샷 위한 . 2개이상으로 필터조건 변경
-#소재명 정확하게 일치로 코드 수정
+#소재명 정확하게 일치(공백 무시 + 대소문자 무시)로 코드 수정
 
 # -*- coding: utf-8 -*-
 import os, io, re, time, zipfile, traceback
@@ -141,7 +141,7 @@ def pick_best_revision(series):
             if best is None or n<best: best=n
     return f"{best}차" if best is not None else "x"
 
-# ====== 대소문자/공백/기호 무시 정규화 유틸 ======
+# ====== 정규화 유틸 ======
 def _norm(s: str) -> str:
     s = "" if s is None else str(s)
     s = s.replace("\ufeff", "").replace("\u200b", "")  # BOM/제로폭 제거
@@ -158,6 +158,14 @@ def _norm_size(s: str) -> str:
     s = _norm(s).lower()
     s = s.replace("×", "x")
     return s
+
+# 대소문자 무시(공백 무시) 비교용: Python casefold 사용
+def _norm_ci(s: str) -> str:
+    s = "" if s is None else str(s)
+    s = s.replace("\ufeff", "").replace("\u200b", "")
+    s = re.sub(r"\s+", "", s)
+    # casefold가 lower보다 더 광범위한 케이스를 동일 취급
+    return s.casefold().strip()
 
 def extract_subjects_from_step1(df_step1, adname_col):
     parsed = df_step1[adname_col].apply(parse_fields_v5)
@@ -230,6 +238,24 @@ def build_final_table(df3, subjects_override=None):
     out_T.index.name="소재명"; out_T.columns.name="사이즈"
     return out_T
 
+# ====== 노션 제목에서 '소재명' 추출 (3번째 '_' 규칙) ======
+def _dbtitle_extract_material(raw: str) -> str:
+    """
+    노션 DB '소재명' 열 형식:
+      제품명 _ 영상/배너 _ 만든년월 _ 소재명 [ _ 기타 ... ]
+    규칙:
+      - 3번째 '_' 다음 텍스트가 소재명
+      - 4번째 '_'가 있으면 3번째와 4번째 사이
+      - 4번째 '_'가 없으면 3번째 '_' 뒤부터 끝까지
+    구현:
+      split('_') 결과의 index 3를 사용. (있으면 그 값, 없으면 빈 문자열)
+    """
+    if raw is None:
+        return ""
+    s = str(raw).strip()
+    parts = s.split("_")
+    return parts[3].strip() if len(parts) >= 4 else ""
+
 def sync_final_table_to_notion(final_table: pd.DataFrame,
                                db_id: str,
                                subject_prop_name: str = "소재명",
@@ -274,15 +300,21 @@ def sync_final_table_to_notion(final_table: pd.DataFrame,
         if subj is None: continue
         raw=_get_plain_text(subj).strip()
         if not raw: continue
-        key_norm = raw.replace(" ","").strip()
+
+        # --- 노션 제목에서 '소재명'만 추출 (3번째 '_' 규칙) ---
+        raw_material = _dbtitle_extract_material(raw)
+
+        # --- 엑셀 소재명들과 '공백 무시 + 대소문자 무시' 정확 일치 비교 ---
+        key_norm = _norm_ci(raw_material)
         exact=None
         for s in subjects:
-            if key_norm==s.replace(" ","").strip():
-                exact=s
+            if key_norm == _norm_ci(s):
+                exact = s
                 break
-        # === 수정: 부분 일치 제거, 정확 일치만 허용 ===
-        match = exact
+
+        match = exact  # 부분 일치 불가
         if not match: continue
+
         row=final_table.loc[match]; updates={}
         for col in size_cols:
             val=row.get(col,"x"); val="x" if pd.isna(val) else val
